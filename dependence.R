@@ -1,0 +1,8 @@
+install.packages("knitr")
+install.packages("rjson")
+install.packages("ape")
+install.packages("reshape2")
+install.packages("tidyverse")
+install.packages("e1071")
+install.packages("BiocManager")
+BiocManager::install("sva")
