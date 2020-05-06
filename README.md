@@ -12,7 +12,7 @@ Before using this tool, run the following R script to install dependencies:
 ```
 Rscript dependence.R
 ```
-# Configuration file
+# Configuration
 
 The configuration file, named "Tool.config" and in JSON format, is used to setup parameters and control the pipeline.
 JSON is a human-readable text format to store "attribute-value" pairs. More details introducing JOSN could be found at <a href="https://en.wikipedia.org/wiki/JSON" target="_blank">**wikipedia**</a>. 
