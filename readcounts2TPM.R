@@ -1,10 +1,15 @@
-
+###########################################################
+### This R script transform read count file to TPM metrics
+### Input: read count file (first column is gene ID, following columns 
+###        are samples' IDs; separated by tab), gene length file (two columns, separated by tab)
+### Output: TPM metrics file
+###########################################################
 #load config file
 library(rjson)
 json_data<-fromJSON(file="Tool.config")
 
 gene_length_file = json_data$config$transcriptome$gene_length_file
-ROSMAP_count_file = json_data$config$transcriptome$readcounts
+Read_count_file = json_data$config$transcriptome$readcounts
 
 
 
@@ -33,26 +38,24 @@ counts_to_tpm <- function(counts, featureLength) {
 
 
 ############### Transform from counts to TPMs ##############
-#gene_length_file = "C:/Data/gencode.v24.annotation.gtf.gene_length_unionexion.txt" # union exon length
+
 gene_length =read.table(gene_length_file, header=F, sep = "\t", stringsAsFactors=F)
-names(gene_length) = c("ENSGID", "length")
-# remove gene name version
+names(gene_length)[1:2] = c("ENSGID", "length")
+# remove gene version
 gene_length$ENSGID= do.call(rbind, strsplit(gene_length$ENSGID, '.', fixed=T))[,1]
 
-#ROSMAP_count_file = "C:/Data/ROSMAP_all_counts_matrix.txt"
-ROSMAP_count = read.table(ROSMAP_count_file, header=T, sep = "\t", stringsAsFactors=F, check.names=F)
-ROSMAP_count = ROSMAP_count[-c(1:4),]
-ROSMAP_count$feature = do.call(rbind, strsplit(ROSMAP_count$feature, '.', fixed=T))[,1]
-comm = intersect(gene_length$ENSGID, ROSMAP_count$feature)
+#Read_count_file load
+Read_count = read.table(Read_count_file, header=T, sep = "\t", stringsAsFactors=F, check.names=F)
+names(Read_count)[1] = "feature"
+# remove gene version
+Read_count$feature = do.call(rbind, strsplit(Read_count$feature, '.', fixed=T))[,1]
+comm = intersect(gene_length$ENSGID, Read_count$feature)
 
-rownames(ROSMAP_count) = ROSMAP_count$feature; ROSMAP_count = ROSMAP_count[,-1]
+rownames(Read_count) = Read_count$feature; Read_count = Read_count[,-1]
 rownames(gene_length) = gene_length$ENSGID; 
-ROSMAP_count = ROSMAP_count[comm,]
+Read_count = Read_count[comm,]
 gene_length = gene_length[comm,]
-ROSMAP_tpm = counts_to_tpm(ROSMAP_count, gene_length$length)
+tpm = counts_to_tpm(Read_count, gene_length$length)
 
-
-
-
-write.csv(ROSMAP_tpm,"TPM_matrix.csv",header = T)
+write.csv(tpm,"TPM_matrix.csv",header = T)
 

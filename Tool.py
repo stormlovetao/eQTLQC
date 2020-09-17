@@ -12,21 +12,11 @@ import json
 import re
 
 
-config_file = 'Tool.config'
-with open('Tool.config','r') as f:
+config_file = "Tool.config"
+with open(config_file,'r') as f:
     pardata = json.load(f)
 
-wkdir = os.getcwd()
-wkdir = os.path.join(wkdir,'TranscriptomeWorkplace/')
-isExist = os.path.exists(wkdir)
-if not isExist:
-    os.mkdir(wkdir)
-
-if (pardata['config']['transcriptome']['usage'].lower() in ['true','t']):
-    #fastq
-    
-    
-    def createTPMfile(filenames):
+def createTPMfile(filenames):
         firstSample = True
         for file in filenames:
             sampleTable = pd.read_csv(wkdir+file+'.genes.results',sep='\t')
@@ -38,20 +28,35 @@ if (pardata['config']['transcriptome']['usage'].lower() in ['true','t']):
             else:
                 tpm_table[file] = sampleTable['TPM']
         tpm_table.to_csv('TPM_matrix.csv',index = False)
-    
-    
-    
+
+# Working directory
+wkdir = os.getcwd()
+
+
+if (pardata['config']['transcriptome']['usage'].lower() in ['true','t']):
+    # If start with Fastq files
     if (pardata['config']['transcriptome'].get('fastq','')!='' ):
+        # setup working directory
+        expr_wkdir = os.path.join(wkdir,'eQTLQC_GeneExp/')
+        isExist = os.path.exists(expr_wkdir)
+        if not isExist:
+            os.mkdir(expr_wkdir)
         rsem_path = pardata['config']['transcriptome']['RSEM']['rsem_path']
         pnum = pardata['config']['transcriptome']['RSEM']['pnum']
         reffile = pardata['config']['transcriptome']['RSEM']['reffile']
-        mapping_software = pardata['config']['transcriptome']['RSEM']['mapping software']
-        mapping_software_path = pardata['config']['transcriptome']['RSEM']['mapping software path']
+        mapping_software = pardata['config']['transcriptome']['RSEM']['mapping_software'].lower()
+        mapping_software_path = pardata['config']['transcriptome']['RSEM']['mapping_software_path']
+        add_parameters = pardata['config']['transcriptome']['RSEM']['add_parameters']
         est = ' --estimate-rspd' if (pardata['config']['transcriptome']['RSEM']['estimate-rspd'].lower() in ['true','t']) else ''
         outgenomebam = ' --output-genome-bam' if (pardata['config']['transcriptome']['RSEM']['output_genome_bam'].lower() in ['true','t']) else ''
         appendnames = ' --append-names' if (pardata['config']['transcriptome']['RSEM']['append_names'].lower() in ['true','t']) else ''
         pairedend = ' --paired-end' if (pardata['config']['transcriptome']['RSEM']['paired-end'].lower() in ['true','t']) else ''
-        
+        # check RSEM path
+        if os.path.exists(rsem_path+ '/rsem-calculate-expression'):
+            sys.exit("Could not find the file of 'rsem-calculate-expression' under rsem_path: " + rsem_path)
+        # check mapping software
+        if mapping_software not in ['bowtie', 'bowtie2', 'star']:
+            sys.exit("mapping_software should be speficied as one of: bowtie, bowtie2 or star. Please specify in config file.")
         Options = '-p '+pnum + pairedend +' --'+mapping_software+ ' --' + mapping_software + '-path '+ mapping_software_path + est + appendnames + outgenomebam
         print('Options ='+Options)
 
@@ -78,7 +83,7 @@ if (pardata['config']['transcriptome']['usage'].lower() in ['true','t']):
         
         createTPMfile(filenames)
                 
-    #bam
+    # If start with BAM files
     elif (pardata['config']['transcriptome'].get('bam','') != ''):
         rsem_path = pardata['config']['transcriptome']['RSEM']['rsem_path']
         pnum = pardata['config']['transcriptome']['RSEM']['pnum']
@@ -94,7 +99,7 @@ if (pardata['config']['transcriptome']['usage'].lower() in ['true','t']):
         inputdir = pardata['config']['transcriptome']['bam']
         filenames = os.listdir(inputdir)
         for file in filenames:
-            command = rsem_path + '/rsem-calculate-expression ' + Options + ' '+inputdir+file +' '+ reffile+' '+wkdir+file.replace('.bam','')
+            command = rsem_path + '/rsem-calculate-expression ' + Options + ' '+inputdir+ '/' +file +' '+ reffile+' '+wkdir+file.replace('.bam','')
             print('command:') 
             print(command)
             os.system(command)
@@ -109,8 +114,8 @@ if (pardata['config']['transcriptome']['usage'].lower() in ['true','t']):
         os.system(command)
         
     #TPM
-    elif (pardata['config']['transcriptome'].get('TPM','') != ''):
-        command = 'cp '+pardata['config']['transcriptome'].get('TPM','')+' TPM_matrix.csv'
+    elif (pardata['config']['transcriptome'].get('metrics','') != ''):
+        command = 'cp '+pardata['config']['transcriptome'].get('metrics','')+' TPM_matrix.csv'
         os.system(command)
         
     else:

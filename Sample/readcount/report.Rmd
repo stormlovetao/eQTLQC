@@ -43,13 +43,14 @@ RLEFilterPercent <-json_data$config$transcriptome$transcriptomeQC$RLEFilterPerce
 DSFilterPercent <- json_data$config$transcriptome$transcriptomeQC$DSFilterPercent
 pvalues.cut <- json_data$config$transcriptome$transcriptomeQC$hcluster$pvalues.cut
 treesNum <- json_data$config$transcriptome$transcriptomeQC$hcluster$cluster_level
-
+low_expr_TPM <- json_data$config$transcriptome$transcriptomeQC$low_expr_TPM
+low_expr_TPM_percent <- json_data$config$transcriptome$transcriptomeQC$low_expr_TPM_percent
 
 library(ape)
 library(reshape2)
 library(tidyverse)
-TPM_data <- read.csv(csvfile,header = TRUE,row.names = 1)
-keep_genes_idx <- (rowMeans(TPM_data>0.1)>0.2) 
+TPM_data <- read.csv(csvfile,header = TRUE)
+keep_genes_idx <- (rowMeans(TPM_data>low_expr_TPM)>low_expr_TPM_percent) 
 TPM_data = TPM_data[keep_genes_idx,]
 
 if(appendInfo)

@@ -31,23 +31,28 @@ For pair-ended reads, filenames of FASTQ should be ended with "_1.fastq" and "_2
 
 eQTLQC will process the raw inputs into the TPM (Transcripts per million reads) metrics using <a href="https://github.com/deweylab/RSEM" target="_blank">**RSEM**</a>. Parameters of RSEM could be setup in configuration file by following keys:
 
-| Keys| Mandatory/optional|  Remarks  |
-| --------   | -----:     |  :----    |
-|rsem_path   |  Mandatory  |string, the directory of RSEM installation|
-|pnum        |  optional    |string, number of threads to use|
-|paired-end  |  Mandatory  |boolean, TRUE or FALSE|
-|reffile     |  Mandatory  |string, the name of the reference used|
-|mapping_software|Mandatory|string, choose alignment software: "bowtie","bowtie2" or "star"|
-|mapping_software_path|Mandatory|string, Path of mapping software chosen|
-|output_genome_bam|optional|string, alignments in genomic coordinates instead in transcript|
-|estimate-rspd|optional|boolean, set this option if you want to estimate the read start position distribution (RSPD) from data. Otherwise, RSEM will use a uniform RSPD|
-|append_names|optional|string, append gene_name/transcript_name to the result files|
+| Keys| Mandatory/optional| Defaults| Remarks  |
+| --------   | -----:     | --------| :----    |
+|rsem_path   |  Mandatory  | NA |string, the directory of RSEM installation|
+|pnum        |  optional   |  8 |string, number of threads to use|
+|paired-end  |  Mandatory  | TRUE| boolean, TRUE or FALSE|
+|reffile     |  Mandatory  | NA | string, the name of the reference used|
+|mapping_software|Mandatory|bowtie2| string, choose alignment software: "bowtie","bowtie2" or "star"|
+|mapping_software_path|optional| NA|string, Path of mapping software chosen. If not given, the path to the executables is assumed to be in the user's PATH environment variable|
+|output_genome_bam|optional|TRUE|boolean, alignments in genomic coordinates instead in transcript|
+|estimate-rspd|optional|TRUE|boolean, set this option if you want to estimate the read start position distribution (RSPD) from data. Otherwise, RSEM will use a uniform RSPD|
+|append_names|optional|boolean, append gene_name/transcript_name to the result files|
+|add_parameters|optional||
 
 
 ### Readcounts/Normalized metrics inputs
-If readcounts table is provided for key "readcounts", eQTLQC will scale it into TPM values (a gene length file is also requested from user with key "gene_length_file"). If users do not want to transform read counts into TPM, users could directly assign readcounts file path to the key "metrics".
+If readcounts table is provided for key "readcounts", eQTLQC will scale it into TPM values. A gene length file is also requested from user with key "gene_length_file". See gene length demo file format: Sample/readcount/gencode.v24.annotation.gtf.gene_length_unionexon. 
 
-If normalized metrics are provided, such as TPM/RPKM/FPKM or even readcounts, eQTLQC will directly turn into downstream preprocessing procedures.
+If users do not want to transform read counts into TPM, users could directly assign readcounts file path to the key "metrics".
+
+If normalized metrics are provided for the key "metrics", such as TPM/RPKM/FPKM or even readcounts, eQTLQC will directly turn into downstream preprocessing procedures.
+
+ReadCount/Metrics file format requirements: The input file should has sample ID as column name; the first column is gene ID (If ENGSID is used, the version behind '.' will be ignored), and the following columns are samples; Fields in each row should be separated by tab separator.
 
 ### Quality control on gene expression profiles
 Quality control procedures will be applied on the "metrics" user provided or eQTLQC generated. 
