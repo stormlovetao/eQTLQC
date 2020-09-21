@@ -68,7 +68,7 @@ The RLE (Relative Log Expression) analysis is based on the hypothesis that in a 
 
 Hierarchical clustering is also a widely used approach to exclude sample outliers. Similarity between each pair of samples is first measured by metrics such as Pearson's correlation coefficient or Spearman's correlation coefficient. The sample distance matrix, obtained by one minus similarity scores, is used to perform hierarchical clustering. Usually, samples with problematic expression profiles will be far from other samples with normal expression profiles in the clustering dendrogram.
 
-We measure the Mahalanobis distances between each sample and the distribution of all samples. The chi-squared P value is calculated for each sample in each cluster. Clusters with <= 60% samples with Bonferroni-corrected P-values <= 0.05 are marked as outlying clusters, and all samples included will be marked as candidate outliers.
+We measure the Mahalanobis distances between each sample and the distribution of all samples. The chi-squared P value is calculated for each sample in each cluster. Clusters with <= *cluster_percent* (60% in default) samples with Bonferroni-corrected P-values <= *pvalues_cut* (0.05 in default) are marked as outlying clusters, and all samples included will be marked as candidate outliers.
 
 #### D-statistic
 
@@ -79,6 +79,8 @@ And conducting the analysis of above analysis, eQTLQC considers the intersection
 ### Normalization and covariates adjustment
 In eQTLQC, we use SVA to adjust the known and hidden covariates. To be specified, we use the *combat* function in SVA to adjust the batch effects, and use the *fsva* function to adjust other known covariates and latent covariates.
 
+Covariates file format requirements: columns should be sperated by tab. The first column should be sample's ID which should be consistant with sample ID in expression data. "sex" and "batch" are two reserved covariate column names, which will be used in gender-mismatch check and adjusting batch effects respectively. Other covariates could be named arbitrarily. Sex, batch and other covariates in string will be treated as factors, and other covariates in numbers will be treated as numeric.
+
 
 | Keys| Mandatory/optional| Defaults|  Remarks  |
 | ----| -----              | -----   |  ---      |
@@ -88,6 +90,7 @@ In eQTLQC, we use SVA to adjust the known and hidden covariates. To be specified
 |cluster_level   |Mandatory| 5     |numeric, The maximum level of hcluster when detecting outlying clusters|
 |covariates      |Mandatory|FALSE  |boolean, covariates available or not |
 |covariates_file |Optional  |NA     |string, covariates file path, necessary when covariates is TRUE|
+
 
 ## Genotype data preprocessing
 

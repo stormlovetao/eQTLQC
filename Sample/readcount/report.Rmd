@@ -7,101 +7,201 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-In this part, we will do quality control and some normalizatation work base on TPM data.
-
-## Three statistics to identify outliers
-
-### RLE
-
-RLE(Relative Log Expression)is assume that most expressions in a sample should be near a mean value, only a few genes have differential expression, which means higher or lower than other genes. To calculate it, for each gene *i* , calculate it median in *N* sample as *Medi* , for each sample *j* , and expression value *eij*, count the difference between *eij* and *Medi* : *deij = eij-Medi* , than boxplot each sample base on *deij* and sort by IQR(interquartile range), the sample with lager IQR is more likely to be an outlier. 
-
-### Hierarchical clustering
-
-We use(1 - spearman's correlation) as distances between samples and assume samples should be homogeneous, so all samples should have short distances between others and clustered homogeneously. So samples far away others may be outliers. So we first use distances which is 1-spearmen correlation to hierarchically clustered, than use top 100 gene sort by variance to calculate Mahalanobis Distance, then a chi2 p-value will be calculated based on mahalanobis distance. Then clusters with $ \geq 60\%$ samples with Bonferroni-corrected p-values < 0.05 were marked as outliers.
-
-### D-statistic
-
-For each sample, D-statistic represent the average correlation between its expression and other samples. A sample with lower D-statistic is more likely to be an outlier.
+In this part, eQTLQC perfoms quality control and normalization based on Metrics data (TPM/RPKM/FPKM/Readcount).
 
 
-
-## Raw data's feature
-
-```{r init and print raw data, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
-#TODO read config file
-library(rjson)
+```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+# Load packages
+if (!require("rjson")){
+  install.packages("rjson")
+  library(rjson)
+}
 if (!require("RColorBrewer")){
   install.packages("RColorBrewer")
   library(RColorBrewer)
 }
+if (!require("ape")){
+  install.packages("ape")
+  library(ape)
+}
+if (!require("reshape2")){
+  install.packages("reshape2")
+  library(reshape2)
+}
+if (!require("tidyverse")){
+  install.packages("tidyverse")
+  library(tidyverse)
+}
+if (!require("sva")){
+  install.packages("sva")
+  library(sva)
+}
+```
+
+## Basic quality control steps
+```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+# Load Configuration file
 json_data<-fromJSON(file="Tool.config")
 
-appendInfo <- toupper(json_data$config$transcriptome$transcriptomeQC$covariants)=="TRUE"
-appendInfoFile <- json_data$config$transcriptome$transcriptomeQC$covariants_file
+metaInfo <- toupper(json_data$config$transcriptome$transcriptomeQC$covariants)=="TRUE"
+metaInfoFile <- json_data$config$transcriptome$transcriptomeQC$covariants_file
 csvfile <- "TPM_matrix.csv"
 RLEFilterPercent <-json_data$config$transcriptome$transcriptomeQC$RLEFilterPercent
 DSFilterPercent <- json_data$config$transcriptome$transcriptomeQC$DSFilterPercent
 pvalues.cut <- json_data$config$transcriptome$transcriptomeQC$hcluster$pvalues.cut
+topk_genes <- json_data$config$transcriptome$transcriptomeQC$hcluster$topk_genes
+cluster_percent <- json_data$config$transcriptome$transcriptomeQC$hcluster$cluster_percent
 treesNum <- json_data$config$transcriptome$transcriptomeQC$hcluster$cluster_level
 low_expr_TPM <- json_data$config$transcriptome$transcriptomeQC$low_expr_TPM
 low_expr_TPM_percent <- json_data$config$transcriptome$transcriptomeQC$low_expr_TPM_percent
+pseudo_count <- json_data$config$transcriptome$transcriptomeQC$TPM_pseudo_count
+Female_specific_gene <- json_data$config$transcriptome$transcriptomeQC$gender_check$Female_specific_gene
+Male_specific_gene<- json_data$config$transcriptome$transcriptomeQC$gender_check$Male_specific_gene
+print("Configuration file load successfully!")
+```
 
-library(ape)
-library(reshape2)
-library(tidyverse)
-TPM_data <- read.csv(csvfile,header = TRUE)
-keep_genes_idx <- (rowMeans(TPM_data>low_expr_TPM)>low_expr_TPM_percent) 
-TPM_data = TPM_data[keep_genes_idx,]
 
-if(appendInfo)
+```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+if(metaInfo)
 {
-  clinical <- read.table(appendInfoFile,header = TRUE,stringsAsFactors = TRUE)
-  rownames(clinical) <- clinical$mrna_id
+  clinical <- read.table(metaInfoFile, header = TRUE, stringsAsFactors = TRUE)
+  print(paste("Covariants loaded, the first column will be treated as sample names.", nrow(clinical), "rows/samples", ncol(clinical)-1, "columns/covariates.", sep = " "))
+  names(clinical)[1] = "sample_id"
+  names(clinical) = tolower(names(clinical))
+  if(is.element("sex", names(clinical) ) ){
+    print("Covariant `sex` detected! We will check gender mismatching samples.")
+  }
+  if(is.element("batch", names(clinical)) ){
+    print("Covariant `batch` detected! We will perform batch effect adjustment.")
+  }
+  rownames(clinical) <- clinical$sample_id
   idx <- intersect(colnames(TPM_data),rownames(clinical))
   clinical <- clinical[idx,]
   TPM_data <- TPM_data[,idx]
+  if(loaded_sample_count-length(idx) >0){
+    print(paste(loaded_sample_count-length(idx), "samples are excluded because of sample mismatching between covariants and expression data.")) 
+  }
 }
+```
 
-rawdata <- TPM_data
+```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+# Load expression data
+TPM_data <- read.csv(csvfile,header = TRUE) # The input file should has sample ID as column name; the first column is gene ID 
+names(TPM_data)[1] <- "feature"
+rownames(TPM_data) <- TPM_data$feature
+TPM_data = TPM_data[,-1]
+keep_genes_idx <- (rowMeans(TPM_data>low_expr_TPM)>low_expr_TPM_percent) 
+TPM_data = TPM_data[keep_genes_idx,]
+print("Gene expression profiles loaded successfully!")
+```
+
+
+```{r }
+echo_line <- paste(length(keep_genes_idx), "genes and", ncol(TPM_data), "samples are loaded from", csvfile, sep = " ")
+print(echo_line)
+loaded_sample_count <- ncol(TPM_data)
+echo_line <- paste(sum(1 - keep_genes_idx), "genes are filtered, because >", low_expr_TPM_percent, "percent samples have expression values <", low_expr_TPM)
+print(echo_line)
+print(paste(sum(keep_genes_idx), "genes left."))
+clusterFilterList <- c()
+```
+
+
+```{r gender mismatch, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+if(metaInfo && is.element("sex",colnames(clinical)) && (Female_specific_gene!='')){
+   print("Covariant `sex` detected! Generate gender specific genes' expression plot.")
+   print(paste("Female specific gene:", Female_specific_gene, ",and male specific gene:", Male_specific_gene, "will be used as classification features.", sep = " "))
+   if(Female_specific_gene %in% rownames(logtpm) && Male_specific_gene %in% rownames(logtpm)){
+    # Gender mismatch
+      if (!require("e1071")){
+      install.packages("e1071")
+      library(e1071)
+     }
+    mismatchFilterList = list()
+    message("generating gender-match plot...")
+    chrX=Female_specific_gene #'ENSG00000229807'  # XIST
+    chrY=Male_specific_gene   #'ENSG00000129824'  # RPS4Y1
+    d=as.data.frame(t(logtpm[c(chrX,chrY),])); 
+    colnames(d) <- c("chrX","chrY")
+    d$Sex = clinical$sex[match(rownames(d), clinical$sample_id)]
+    if(length(unique(d$Sex))<2){
+      print("Less than 2 sex types, please check the sex covariate. Skip!")
+    }else{
+      plot(d$chrX, d$chrY, xlab= paste0("Expression of ", Female_specific_gene), ylab=paste0("Expression of ", Male_specific_gene), col= 'white',bg=ifelse(d$Sex==0,'red','blue'), pch=21, bty="n", main="Gender-specific gene expression")
+    legend('bottomleft',pch=21,c("Female","Male"), col='white',pt.bg=c("red","blue"), bty='n', cex=.5)
+    model1 = svm(Sex ~ .,data = d,type = 'C-classification')
+    plot(model1,d)
+    pSex = predict(model1)
+    pSex = as.numeric(pSex)
+    pSex = pSex - 1
+    matchlist = (pSex == d$Sex)
+    mismatchList = which(matchlist==FALSE)
+    clusterFilterList = rownames(d)[mismatchList]
+    clusterFilterList <- as.character(clusterFilterList)
+    }
+    
+   }else{
+     print(paste("Cannot detect at least one gene of:", Female_specific_gene, "and", Male_specific_gene, sep = " "))
+   }
+   }else{
+  print("Cannot detect `sex` covariate, skip gender-mismatch checking.")
+}
+```
+
+## Identify sample outliers with abnormal expression profiles using three statistical methods
+
+### Relative Log Expression (RLE) Analysis
+
+RLE (Relative Log Expression) analysis assumes that, most genes' expression values should be stable across samples, and only a few genes have differential expression levels. Given a gene expression matrix *G* with gene in row and sample in column, RLE analysis has the following steps: (1) for each gene *i* , calculate its median expression level across *N* sample as *Medi* ; (2) for each sample *j* , and each gene *i*, substract the median expression level of each gene (*Medi*) from original expression values *G(i,j)*; (3) For each sample, the residual expression values across genes should be centered at zero under above hypothesis. The RLE analysis makes boxplots for all samples based on residual gene expression values, and sorts those boxplots/samples by the interquartile range (IQR) in an increasing order from left to right. Finally, samples at the right most part are likely to be outliers if they have obvious larger IQR than other samples. In practice, we set the right most 5% samples as candidate outliers by default, which could be manually setup in the configuration file.
+
+```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
 RLEFilterLength <- RLEFilterPercent*ncol(TPM_data)
 DSFilter <- DSFilterPercent*ncol(TPM_data)
 
-
-#print raw data's statistic including RLE,D and hclust
+# Before sample outlier detection and normalization
 #RLE
-logtpm = log10(TPM_data + 1e-4)
+logtpm = log10(TPM_data + pseudo_count)
 rle=logtpm-apply(logtpm, 1, median) # change "/" to "-" so that we got log(fold-change) which centered on 0 on the RLE plot.
 iqr = apply(rle,2,IQR)
 rle=melt(cbind(ID=rownames(rle), rle), variable.name = "Sample",value.name ="TPM", id="ID")
 names(rle) <- c("feature","Sample","TPM")
 bymedian <- with(rle, reorder(Sample, TPM, IQR))  # sort by IQR
 par(mar=c(3,3,3,3))
-boxplot(TPM ~ bymedian, data=rle, outline=F, las=2, boxwex=1, col='gray', cex.axis=0.3, main="Raw data Relative Log Expression", xlab="", ylab="RLE", frame=F)
+boxplot(TPM ~ bymedian, data=rle, outline=F, las=2, boxwex=1, col='gray', cex.axis=0.3, main="RLE plot before QC", xlab="", ylab="Residual expression levels", frame=F)
 ExpPerSample <- nrow(TPM_data)
-RLEFilterList <- unique(bymedian[((length(bymedian)-(ExpPerSample*RLEFilterLength))+1):length(bymedian)]) #filtered
+RLEFilterList <- unique(bymedian[((length(bymedian)-ExpPerSample*RLEFilterLength)+1):length(bymedian)]) #filtered
+RLEFilterList <- as.character(RLEFilterList)
+print(paste0("The right most ", RLEFilterPercent*100, "% samples (N = ", length(RLEFilterList), ") are marked as candidate outliers in this step:") )
+RLEFilterList
+```
 
+### Hierarchical clustering plot 
+
+eQTLQC uses (1 - spearman's correlation coefficient) as distance metric to measure sample similarities. Under the assumption that samples should be homogeneous, all samples should have approximate distances between each others, and samples with problematic expression profiles will be far from other samples with normal expression profiles in the clustering dendrogram. To make this process automatic, we use a Mahalanobis distance-based approach to identify outliers. We measure the Mahalanobis distances between each sample and the distribution of all samples. The chi-squared P value was calculated for each sample in each cluster. Clusters with ≤ 60% samples with Bonferroni-corrected P-values ≤ 0.05 will be marked as outlier clusters, and all samples included will be marked as candidate outliers. To efficiently calculate the mahalanobis distance, the top 100 genes sorted by expression variances will be used. All parameters could be manually setup in the configuration file.
+
+Clusters with <= `cluster_percent` (60% in default) samples with Bonferroni-corrected P-values <= `pvalues_cut` (0.05 in default) are marked as outlying clusters, and all samples included will be marked as candidate outliers.
+
+```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
 #hcluster
-sampleDists = 1 - cor(TPM_data, method='spearman')
-hc=hclust(as.dist(sampleDists),method = "complete")
+logtpm = log10(TPM_data + pseudo_count) 
+
+sampleDists = 1 - cor(logtpm, method='spearman')
+hc=hclust(as.dist(sampleDists), method = "complete")
 hcphy = as.phylo(hc)
-if(appendInfo && is.element("mrna_id",colnames(clinical)) && is.element("batch",colnames(clinical))){
- co = clinical$batch[match(hcphy$tip.label, clinical$mrna_id)]
+if(metaInfo && is.element("sample_id",colnames(clinical)) && is.element("batch",colnames(clinical))){
+ co = clinical$batch[match(hcphy$tip.label, clinical$sample_id)]
  co = as.factor(co)
  co_length = length(levels(co))
  co = brewer.pal(co_length,"Set3")
  par(mar=c(3,3,3,3))
- plot(hcphy, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Raw Data clusting(Spearman - Cor.)")
- #Xtext = c("batch 0", "batch 1","batch 2","batch 3","batch 4","batch 5","batch 6","batch 7","batch 8")
+ plot(hcphy, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Sample clustering before QC (Spearman - Cor.)")
  Xtext = paste("batch",1:co_length)
  legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
 } else {
-  plot(hcphy, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Raw Data clusting(Spearman - Cor.)")
+  plot(hcphy, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Sample clustering before QC (Spearman - Cor.)")
 }
 
-
-
-logtpm = log10(TPM_data + 1) 
-ntop <- 100
+ntop <- topk_genes
 Pvars <- apply(logtpm, 1, var)
 select <- order(Pvars, decreasing =TRUE)[seq_len(min(ntop, length(Pvars)))]
 MD_matrix <- logtpm[select, ]
@@ -118,208 +218,165 @@ for(x in c(1:treesNum)){
   for(i in idx)
   {
     group <- hc$labels[which(trees == i)]
-    if(sum(group %in% names(pvalues.low))/length(group) >= 0.6)
+    if(sum(group %in% names(pvalues.low))/length(group) >= cluster_percent)
     {
       HCoutliers <- union(HCoutliers,group)
     }
   }
 }
 
+print(paste(length(HCoutliers), "samples are marked as candidate outlier(s) in this step.", sep = " "))
+if(length(HCoutliers)>0){
+  print("Sample outliers are marked in red as follows:")
+  print(HCoutliers)
+  co1 = hc$labels%in%HCoutliers
+  co1[which(co1 == "FALSE")]<-"gray0"
+  co1[which(co1 == "TRUE")]<-"red"
+  par(mar=c(3,3,3,3))
+  plot(hcphy, tip.col = co1, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Label Outliers in Red")
+  Xcol = c("gray0", "red")
+  Xtext = c("Normal Sample", "Outliers")
+  legend('bottomleft',pch=21,Xtext, col='white',pt.bg=Xcol, cex=1)
+}else{
+  print("No outlier detected.")
+}
+```
 
+### D-statistics distribution
+The D-statistic of each sample is defined as the median Spearman’s correlation coefficients with other samples. Samples locating at the left tail of the D-statistic distribution are likely to be outliers. By default, eQTLQC considers the left most 5% samples as candidate outliers. 
 
+```{r,echo=FALSE, warning=FALSE, message=FALSE }
 #D-s
 D = apply(1-sampleDists, 1, median)
-hist(D, breaks=100, ylab="Number of samples", xlab="D-statistic", main="Raw Data Histogram of D-statistic")
+hist(D, breaks=100, ylab="Number of samples", xlab="D-statistic", main="Histogram of Sample D-statistics before data QC")
 DSFilter <- sort(D)[DSFilter]
 D<-as.data.frame(D)
 D<-data.frame(Sample = rownames(D),D = D$D)
 D_filterList = D%>%filter(D <= DSFilter)
 D_filterList <- D_filterList$Sample
-```
-
-### Outliers voted by RLE
-```{r , echo=FALSE, warning=FALSE, message=FALSE}
-RLEFilterList<-as.character(RLEFilterList)
-RLEFilterList
-```
-
-### Outliers voted by Hcluster
-```{r , echo=FALSE, warning=FALSE, message=FALSE}
-HCoutliers
-co1 = hc$labels%in%HCoutliers
-co1[which(co1 == "FALSE")]<-"gray0"
-co1[which(co1 == "TRUE")]<-"red"
-par(mar=c(3,3,3,3))
-plot(hcphy, tip.col = co1, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Mark Outlier on cluster graphic")
-Xcol = c("gray0", "red")
-Xtext = c("Normal Sample", "Outliers")
-legend('bottomleft',pch=21,Xtext, col='white',pt.bg=Xcol, cex=1)
-```
-
-
-
-### Outliers voted by D-statistic
-```{r , echo=FALSE, warning=FALSE, message=FALSE}
 D_filterList<-as.character(D_filterList)
-D_filterList
+print(paste0("The right most ", DSFilterPercent*100, "% samples (N=", length(D_filterList), ") are marked as candidate outliers in this step:") )
+print(D_filterList)
 ```
 
-### Their union is picked as outliers
+
+### Sample outliers with problematic expression profiles are defined as the intersection of the candidate outliers derived from RLE, H-Clustering and D-statistics distribution analyses.
 ```{r , echo=FALSE, warning=FALSE, message=FALSE}
+outliersList <- c()
 outliersList <- intersect(RLEFilterList,intersect(HCoutliers,D_filterList))
+print("Outliers:")
 outliersList
+outliersList<- union(outliersList,clusterFilterList)
 ```
 
 
-```{r gender mismatch, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
-if(appendInfo && is.element("sex",colnames(clinical))){
-  #reserved words:msex,mrna_id,mrna_id_batch,age_death,pmi
 
-    # Gender mismatch
-    library(e1071)
-    mismatchFilterList = list()
-    message("generating gender-match plot...")
-    chrX='ENSG00000229807'  # XIST
-    chrY='ENSG00000129824'  # RPS4Y1
-    d=as.data.frame(t(logtpm[c(chrX,chrY),])); 
-    colnames(d) <- c("chrX","chrY")
-    d$Sex = clinical$sex[match(rownames(d), clinical$mrna_id)]
-    plot(d$chrX, d$chrY, xlab="Expression of XIST", ylab="Expression of RPS4Y1", col= 'white',bg=ifelse(d$Sex==0,'red','blue'), pch=21, bty="n", main="Gender-specific expression")
-    legend('bottomleft',pch=21,c("Female","Male"), col='white',pt.bg=c("red","blue"), bty='n', cex=.5)
-    model1 = svm(Sex ~ .,data = d,type = 'C-classification')
-    plot(model1,d)
-    pSex = predict(model1)
-    pSex = as.numeric(pSex)
-    pSex = pSex - 1
-    matchlist = (pSex == d$Sex)
-    mismatchList = which(matchlist==FALSE)
-    clusterFilterList = rownames(d)[mismatchList]
-    clusterFilterList <- as.character(clusterFilterList)
-    outliersList<- union(outliersList,clusterFilterList)
-    
-  
-}
-```
-
-
-```{r if no appendInfo, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
-if(!appendInfo){
-  print("with no append information, the pipeline is ended")
-  outliersIndex <- which(colnames(TPM_data) %in% outliersList)
+```{r if no metaInfo, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+if(!metaInfo){
+  outliersIndex <- which(colnames(logtpm) %in% outliersList)
   if(!length(outliersIndex) == 0){
-    TPM_data <- TPM_data[,-outliersIndex]
+    logtpm <- logtpm[,-outliersIndex]
   }
-  keep_genes_idx <- (rowSums(TPM_data>0.1)>=10) 
-  expr= TPM_data[keep_genes_idx,]
-  expr=log10(expr+1e-4)  # so row value of 0 will be -4 in the transformed value
-  # outlier correction: quantile normalization with order preserved. Now TPM is changed to rank normalized gene expression.
+
+  expr <- logtpm
+  # quantile normalization with order preserved. Now TPM is changed to rank normalized gene expression.
   m=apply(expr, 1, mean); 
   sd=apply(expr, 1, sd)
   expr = t(apply(expr, 1, rank, ties.method = "average"));
   #expr = qnorm(expr / (ncol(expr)+1));  # to standard normalization
   expr = qnorm(expr / (ncol(expr)+1), mean=m, sd=sd)  # or, to preserve the mean and sd of each gene
-  rm(m,sd)
   expr = as.data.frame(expr)
   
   write.table(format(expr, digits=4,nsmall=4), file = "expression.postQC.xls", sep="\t", col.names = NA, quote=F,row.names = TRUE)
-  
 }
 
 ```
 
 
-```{r adjust covariates and combat and sva, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
-if(appendInfo)
+```{r adjust covariates using combat and sva, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+if(metaInfo)
 {
-outliersIndex <- which(colnames(TPM_data) %in% outliersList)
-if(!length(outliersIndex) == 0){
-  TPM_data <- TPM_data[,-outliersIndex]
-}
-if(is.element("mrna_id",colnames(clinical)) || is.element("batch",colnames(clinical))){
-  keep_genes_idx <- (rowSums(TPM_data>0.1)>=10) 
-  expr= TPM_data[keep_genes_idx,]
-  expr=log10(expr+1e-4)  # so row value of 0 will be -4 in the transformed value
-  # outlier correction: quantile normalization with order preserved. Now TPM is changed to rank normalized gene expression.
+  outliersIndex <- which(colnames(logtpm) %in% outliersList)
+  if(!length(outliersIndex) == 0){
+    logtpm <- logtpm[,-outliersIndex]
+  }
+
+  expr <- logtpm
   m=apply(expr, 1, mean); 
   sd=apply(expr, 1, sd)
   expr = t(apply(expr, 1, rank, ties.method = "average"));
   #expr = qnorm(expr / (ncol(expr)+1));  # to standard normalization
   expr = qnorm(expr / (ncol(expr)+1), mean=m, sd=sd)  # or, to preserve the mean and sd of each gene
-  rm(m,sd)
-  
   expr = as.data.frame(expr)
   covs = clinical
-  rownames(covs) = covs$mrna_id
+  rownames(covs) = covs$sample_id
   covs = covs[names(expr),]
-  
-  covs$batch = as.factor(covs$batch)
-
   if(is.element("sex",colnames(covs)))
   {
-  	covs$sex = as.factor(covs$sex)
+    	covs$sex = as.factor(covs$sex)
   }
-  if(is.element("age_death",colnames(covs)))
-  {
-    covs$age_death = as.numeric(covs$age_death)
-  }
-  library(sva)
-  message("# adjusting expression with covariates...")
-  ######################
-  #Combat remove batch effects
-  modcombat = model.matrix(~1, data = covs)
-  combat_expr = ComBat(dat=as.matrix(expr), batch=covs$batch, mod = modcombat)
-  par(mar=c(3,3,3,3))
-  sampleDists_combat = 1 - cor(combat_expr, method='spearman')
-  hc_combat = hclust(as.dist(sampleDists_combat),method = "complete")
-  hcphy_combat = as.phylo(hc_combat)
-  plot(hcphy_combat, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Hcluster after combat")
-  #Xcol = c("gray0", "red", "orange", "yellow", "green", "blue", "purple", "wheat", "violet")
-  Xtext = paste("batch",1:co_length)
-  legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
+  if(is.element("batch",colnames(clinical))){
+      covs$batch = as.factor(covs$batch)
+      #if(is.element("age_death",colnames(covs)))
+      #{
+       # covs$age_death = as.numeric(covs$age_death)
+      #}
+      message("# adjusting expression with covariates...")
+      ######################
+      #Combat remove batch effects
+      modcombat = model.matrix(~1, data = covs)
+      combat_expr = ComBat(dat=as.matrix(expr), batch=covs$batch, mod = modcombat)
+      # show sample clustering plot after removeing batch effects
+      par(mar=c(3,3,3,3))
+      sampleDists_combat = 1 - cor(combat_expr, method='spearman')
+      hc_combat = hclust(as.dist(sampleDists_combat),method = "complete")
+      hcphy_combat = as.phylo(hc_combat)
+      plot(hcphy_combat, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Sample clustering after removing batch effects using Combat.")
+      Xtext = paste("batch",1:co_length)
+      legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
+    }
+    #####################
+    #sva adjusted
+    Mod = model.matrix(~.-batch-sample_id, data=covs) # full model(adjustment variables + variables of interest)
+    #Mod = model.matrix(~batch, data=covs)
+    Mod0 = model.matrix(~1,data=covs) # Null model (vairables of interest)
   
-  #####################
-  #sva adjusted
-  Mod = model.matrix(~.-batch-mrna_id, data=covs) # full model(adjustment variables + variables of interest)
-  #Mod = model.matrix(~batch, data=covs)
-  Mod0 = model.matrix(~1,data=covs) # Null model (vairables of interest)
-
-  svaobj = sva(as.matrix(combat_expr),Mod, Mod0)
-  fsvaobj = fsva(dbdat=as.matrix(combat_expr),mod=Mod,sv=svaobj,   newdat=as.matrix(combat_expr))
-  residuals = fsvaobj$db
-
-  message("# run RLE on SVA normalized quantification data ...")
-  #####################
-  #residuals <- combat_expr
-  ## RLE after SVA
-  res=data.frame(residuals, check.names = F)
-  rle=res-apply(res, 1, median) # after SVA
-  rle=melt(cbind(ID=rownames(rle), rle), variable.name = "Sample",value.name ="TPM", id="ID")
-  bymedian <- with(rle, reorder(Sample, TPM, IQR))  # sort by IQR
-  par(mar=c(7,3,3,1))
-  boxplot(TPM ~ bymedian, data=rle, ylim=c(-4,4), outline=F, las=2, boxwex=1, col='gray', cex.axis=0.5, main="Final Data RLE", xlab="", ylab="Relative log expression (RLE)")
-  abline(h=0, col='red',lwd=1)
+    svaobj = sva(as.matrix(combat_expr),Mod, Mod0)
+    fsvaobj = fsva(dbdat=as.matrix(combat_expr),mod=Mod,sv=svaobj,   newdat=as.matrix(combat_expr))
+    residuals = fsvaobj$db
   
-  ## mean gene expression distribution before and after SVA
-  par(mfrow=c(2,1))
-  hist(apply(expr,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution before adjustment")
-  hist(apply(residuals,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution after adjustment")
-  ## clustering after sva
-  sampleDists_sva = 1 - cor(residuals, method='spearman')
-  hc_sva = hclust(as.dist(sampleDists_sva),method = "complete")
-  hcphy_sva = as.phylo(hc_sva)
-  
-  par(mfrow=c(1,1))
-  par(mar=c(3,3,3,3))
-  plot(hcphy_sva, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Final data clusting")
-  #Xcol = c("gray0", "red", "orange", "yellow", "green", "blue", "purple", "wheat", "violet")
-  #Xtext = c("batch 0", "batch 1","batch 2","batch 3","batch 4","batch 5","batch 6","batch 7","batch 8")
-  Xtext = paste("batch",1:co_length)
-  legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
-  }
+    message("# run RLE on SVA normalized quantification data ...")
+    #####################
+    #residuals <- combat_expr
+    ## RLE after SVA
+    res=data.frame(residuals, check.names = F)
+    rle=res-apply(res, 1, median) # after SVA
+    rle=melt(cbind(ID=rownames(rle), rle), variable.name = "Sample",value.name ="TPM", id="ID")
+    bymedian <- with(rle, reorder(Sample, TPM, IQR))  # sort by IQR
+    par(mar=c(7,3,3,1))
+    boxplot(TPM ~ bymedian, data=rle, ylim=c(-4,4), outline=F, las=2, boxwex=1, col='gray', cex.axis=0.5, main="RLE plot after QC", xlab="", ylab="Residual expression values")
+    abline(h=0, col='red',lwd=1)
+    
+    ## mean gene expression distribution before and after SVA
+    par(mfrow=c(2,1))
+    hist(apply(expr,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution before adjustment")
+    hist(apply(residuals,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution after adjustment")
+    ## clustering after sva
+    sampleDists_sva = 1 - cor(residuals, method='spearman')
+    hc_sva = hclust(as.dist(sampleDists_sva),method = "complete")
+    hcphy_sva = as.phylo(hc_sva)
+    
+    par(mfrow=c(1,1))
+    par(mar=c(3,3,3,3))
+    plot(hcphy_sva, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Final data clusting")
+    
+    Xtext = paste("batch",1:co_length)
+    legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
+   
   message("# save final quantification data into file")
   ######################
   write.table(format(residuals, digits=4,nsmall=4), file = "expression.postQC.xls", sep="\t", col.names = NA, quote=F,row.names = TRUE)
-  rownames(clinical) = clinical$mrna_id
+  rownames(clinical) = clinical$sample_id
   clinical_RNAseqSamples = clinical[colnames(residuals),]
   write.table(clinical_RNAseqSamples, file = "clinical_RNAseqQCedSamples.txt", sep="\t", col.names=TRUE, quote=F, row.names=FALSE)
 }
