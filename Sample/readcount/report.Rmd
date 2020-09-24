@@ -43,8 +43,14 @@ if (!require("sva")){
 # Load Configuration file
 json_data<-fromJSON(file="Tool.config")
 
-metaInfo <- toupper(json_data$config$transcriptome$transcriptomeQC$covariants)=="TRUE"
-metaInfoFile <- json_data$config$transcriptome$transcriptomeQC$covariants_file
+metaInfo <- toupper(json_data$config$transcriptome$transcriptomeQC$covariates$covariates_tag)=="TRUE"
+if(metaInfo){
+  metaInfoFile <- json_data$config$transcriptome$transcriptomeQC$covariates$covariates_file
+  metaInfo_sample_id_column <- json_data$config$transcriptome$transcriptomeQC$covariates$sample_id_column
+  metaInfo_batch_column <- json_data$config$transcriptome$transcriptomeQC$covariates$batch_column
+  metaInfo_gender_column <- json_data$config$transcriptome$transcriptomeQC$covariates$gender_column
+  metaInfo_adjust_covariates <- json_data$config$transcriptome$transcriptomeQC$covariates$adjust_covariates
+}
 csvfile <- "TPM_matrix.csv"
 RLEFilterPercent <-json_data$config$transcriptome$transcriptomeQC$RLEFilterPercent
 DSFilterPercent <- json_data$config$transcriptome$transcriptomeQC$DSFilterPercent
@@ -61,83 +67,108 @@ print("Configuration file load successfully!")
 ```
 
 
-```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+```{r echo=FALSE, warning=FALSE, results='hide'}
 if(metaInfo)
 {
-  clinical <- read.table(metaInfoFile, header = TRUE, stringsAsFactors = TRUE)
-  print(paste("Covariants loaded, the first column will be treated as sample names.", nrow(clinical), "rows/samples", ncol(clinical)-1, "columns/covariates.", sep = " "))
-  names(clinical)[1] = "sample_id"
-  names(clinical) = tolower(names(clinical))
-  if(is.element("sex", names(clinical) ) ){
-    print("Covariant `sex` detected! We will check gender mismatching samples.")
+  Meta <- read.table(metaInfoFile, header = TRUE, stringsAsFactors = TRUE)
+  print("covariates file loaded sucessfully!")
+  adjust_covariates = metaInfo_adjust_covariates %>% str_split(pattern = ",\\s") %>% unlist
+  if(!(metaInfo_sample_id_column %in% names(Meta))){
+    print(paste0("Cannot detect sample ID column: ", metaInfo_sample_id_column, " , Exit!"))
+    quit(save = "no", status = 1, runLast = FALSE)
+  }else{
+    if(length(unique(Meta[[metaInfo_sample_id_column]])) != nrow(Meta)){
+      print(paste0("Sample ID column: ", metaInfo_sample_id_column, ", has duplicated IDs. Please remove duplicates, Exit!"))
+      quit(save = "no", status = 1, runLast = FALSE)
+    }
+  } # sample_id is mandatory
+  if(sum(adjust_covariates %in% names(Meta)) != length(adjust_covariates)){
+    print(paste0("Cannot detect covariates column: ", paste(adjust_covariates[!(adjust_covariates %in% names(Meta))], collapse= ", "), " ,Exit!"))
+    quit(save = "no", status = 1, runLast = FALSE)
+  } # covariates to be adjusted should have accurate names
+  if((metaInfo_batch_column!="") && (metaInfo_batch_column %in% adjust_covariates)){
+    print(paste0("Covariate ", metaInfo_batch_column, " detected. We will adjust batch effects."))
+    batch_adjust_signal <- TRUE
+    adjust_covariates <- adjust_covariates[adjust_covariates != metaInfo_batch_column] # eQTLQC adjust batch effects separately.
+  }else{
+    batch_adjust_signal <- FALSE
   }
-  if(is.element("batch", names(clinical)) ){
-    print("Covariant `batch` detected! We will perform batch effect adjustment.")
+  if((metaInfo_gender_column!="") && (metaInfo_gender_column %in% adjust_covariates)){
+    print(paste0("Covariate ", metaInfo_gender_column, " detected. We will check gender-mismatched samples."))
+    gender_adjust_signal <- TRUE
+  }else{
+    gender_adjust_signal <- FALSE
   }
-  rownames(clinical) <- clinical$sample_id
-  idx <- intersect(colnames(TPM_data),rownames(clinical))
-  clinical <- clinical[idx,]
-  TPM_data <- TPM_data[,idx]
-  if(loaded_sample_count-length(idx) >0){
-    print(paste(loaded_sample_count-length(idx), "samples are excluded because of sample mismatching between covariants and expression data.")) 
-  }
+  rownames(Meta) <- Meta[[metaInfo_sample_id_column]]
 }
 ```
 
-```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
-# Load expression data
+```{r echo=FALSE, warning=FALSE, results='hide'}
+# Load expression data, exclude low-expressed genes, samples without meta information
 TPM_data <- read.csv(csvfile,header = TRUE) # The input file should has sample ID as column name; the first column is gene ID 
 names(TPM_data)[1] <- "feature"
-rownames(TPM_data) <- TPM_data$feature
-TPM_data = TPM_data[,-1]
-keep_genes_idx <- (rowMeans(TPM_data>low_expr_TPM)>low_expr_TPM_percent) 
-TPM_data = TPM_data[keep_genes_idx,]
+if( sum(duplicated(TPM_data$feature)) > 0){
+  print("Feature ID (e.g. gene names) should be in the first column. Please remove duplicated feature IDs, Exit!")
+  quit(save = "no", status = 1, runLast = FALSE)
+}else{
+  rownames(TPM_data) <- TPM_data$feature
+  TPM_data = TPM_data[,-1]
+  loaded_sample_count <- ncol(TPM_data)
+}
+# make sure every expr column is in numeric type
+matrix_check <- map(TPM_data, is.numeric) %>% unlist
+if(sum(!matrix_check) > 0){
+  print("The following column(s) in expression matrix is/are NOT in numeric type. Plese check, Exit!")
+  print(paste(names(matrix_check)[!matrix_check], collapse = "; "))
+  quit(save = "no", status = 1, runLast = FALSE)
+}
 print("Gene expression profiles loaded successfully!")
+print(paste(nrow(TPM_data), "genes and", ncol(TPM_data), "samples are loaded from", csvfile, sep = " "))
+
+idx <- intersect(colnames(TPM_data),rownames(Meta))
+Meta <- Meta[idx,]
+TPM_data <- TPM_data[,idx]
+if(loaded_sample_count-length(idx) >0){
+  print(paste(loaded_sample_count-length(idx), "samples are excluded because of sample mismatching between covariates and expression data.")) 
+}
+
 ```
 
-
-```{r }
-echo_line <- paste(length(keep_genes_idx), "genes and", ncol(TPM_data), "samples are loaded from", csvfile, sep = " ")
-print(echo_line)
-loaded_sample_count <- ncol(TPM_data)
-echo_line <- paste(sum(1 - keep_genes_idx), "genes are filtered, because >", low_expr_TPM_percent, "percent samples have expression values <", low_expr_TPM)
-print(echo_line)
-print(paste(sum(keep_genes_idx), "genes left."))
-clusterFilterList <- c()
-```
-
-
-```{r gender mismatch, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
-if(metaInfo && is.element("sex",colnames(clinical)) && (Female_specific_gene!='')){
-   print("Covariant `sex` detected! Generate gender specific genes' expression plot.")
-   print(paste("Female specific gene:", Female_specific_gene, ",and male specific gene:", Male_specific_gene, "will be used as classification features.", sep = " "))
-   if(Female_specific_gene %in% rownames(logtpm) && Male_specific_gene %in% rownames(logtpm)){
+```{r, echo=FALSE, warning=FALSE}
+if(metaInfo && gender_adjust_signal && (Female_specific_gene!='')){
+   logtpm = log10(TPM_data + pseudo_count)
+   print("Generate gender specific genes' expression plot:")
+   print(paste("Female specific gene:", Female_specific_gene, "and male specific gene:", Male_specific_gene, "will be used as classification features.", sep = " "))
+   if(Female_specific_gene %in% rownames(TPM_data) && Male_specific_gene %in% rownames(TPM_data)){
     # Gender mismatch
       if (!require("e1071")){
       install.packages("e1071")
       library(e1071)
      }
     mismatchFilterList = list()
-    message("generating gender-match plot...")
     chrX=Female_specific_gene #'ENSG00000229807'  # XIST
     chrY=Male_specific_gene   #'ENSG00000129824'  # RPS4Y1
     d=as.data.frame(t(logtpm[c(chrX,chrY),])); 
-    colnames(d) <- c("chrX","chrY")
-    d$Sex = clinical$sex[match(rownames(d), clinical$sample_id)]
+    colnames(d) <- c(Female_specific_gene, Male_specific_gene)
+    d$Sex = Meta[match(rownames(d), rownames(Meta)), metaInfo_gender_column]
     if(length(unique(d$Sex))<2){
       print("Less than 2 sex types, please check the sex covariate. Skip!")
     }else{
-      plot(d$chrX, d$chrY, xlab= paste0("Expression of ", Female_specific_gene), ylab=paste0("Expression of ", Male_specific_gene), col= 'white',bg=ifelse(d$Sex==0,'red','blue'), pch=21, bty="n", main="Gender-specific gene expression")
-    legend('bottomleft',pch=21,c("Female","Male"), col='white',pt.bg=c("red","blue"), bty='n', cex=.5)
+    plot(d[[Female_specific_gene]], d[[Male_specific_gene]], xlab= paste0("Log expression of ", Female_specific_gene), ylab=paste0("Log expression of ", Male_specific_gene), col= 'white',bg=ifelse(tolower(d$Sex)=="female",'red','blue'), pch=21, bty="n", main="Gender-specific gene expression")
+    legend('bottomleft',pch=21,c("Female","Male"), col='white',pt.bg=c("red","blue"), bty='n')
     model1 = svm(Sex ~ .,data = d,type = 'C-classification')
     plot(model1,d)
     pSex = predict(model1)
-    pSex = as.numeric(pSex)
-    pSex = pSex - 1
     matchlist = (pSex == d$Sex)
     mismatchList = which(matchlist==FALSE)
     clusterFilterList = rownames(d)[mismatchList]
     clusterFilterList <- as.character(clusterFilterList)
+    if(length(clusterFilterList) > 0){
+      print("The following samples are gender-mismatched, and have been excluded:")
+      print(paste(clusterFilterList, collapse = "; "))
+    }else{
+      print("All samples in expression data have correct gender information.")
+    }
     }
     
    }else{
@@ -147,6 +178,18 @@ if(metaInfo && is.element("sex",colnames(clinical)) && (Female_specific_gene!=''
   print("Cannot detect `sex` covariate, skip gender-mismatch checking.")
 }
 ```
+
+
+
+```{r echo=FALSE, warning=FALSE, results='hide'}
+keep_genes_idx <- (rowMeans(TPM_data>low_expr_TPM)>low_expr_TPM_percent) 
+TPM_data = TPM_data[keep_genes_idx,]
+print(paste(sum(1 - keep_genes_idx), "genes are filtered, because >", low_expr_TPM_percent*100, "% samples have expression values <", low_expr_TPM))
+print(paste(sum(keep_genes_idx), "genes left."))
+clusterFilterList <- c()
+logtpm = log10(TPM_data + pseudo_count)
+```
+
 
 ## Identify sample outliers with abnormal expression profiles using three statistical methods
 
@@ -160,14 +203,16 @@ DSFilter <- DSFilterPercent*ncol(TPM_data)
 
 # Before sample outlier detection and normalization
 #RLE
-logtpm = log10(TPM_data + pseudo_count)
 rle=logtpm-apply(logtpm, 1, median) # change "/" to "-" so that we got log(fold-change) which centered on 0 on the RLE plot.
 iqr = apply(rle,2,IQR)
 rle=melt(cbind(ID=rownames(rle), rle), variable.name = "Sample",value.name ="TPM", id="ID")
 names(rle) <- c("feature","Sample","TPM")
+rle_IQR <- rle %>% group_by(Sample) %>% summarise(IQR = IQR(TPM))
+rle_IQR_range <- rle_IQR$IQR %>% range %>% abs() %>% max()
+rle_IQR_range <- 2*rle_IQR_range %>% ceiling()
 bymedian <- with(rle, reorder(Sample, TPM, IQR))  # sort by IQR
 par(mar=c(3,3,3,3))
-boxplot(TPM ~ bymedian, data=rle, outline=F, las=2, boxwex=1, col='gray', cex.axis=0.3, main="RLE plot before QC", xlab="", ylab="Residual expression levels", frame=F)
+boxplot(TPM ~ bymedian, data=rle, outline=F, ylim = c(-rle_IQR_range, rle_IQR_range), las=2, boxwex=1, col='gray', cex.axis=0.3, main="RLE plot before QC", xlab="", ylab="Residual expression levels", frame=F)
 ExpPerSample <- nrow(TPM_data)
 RLEFilterList <- unique(bymedian[((length(bymedian)-ExpPerSample*RLEFilterLength)+1):length(bymedian)]) #filtered
 RLEFilterList <- as.character(RLEFilterList)
@@ -183,19 +228,17 @@ Clusters with <= `cluster_percent` (60% in default) samples with Bonferroni-corr
 
 ```{r echo=FALSE, warning=FALSE, results='hide', message=FALSE}
 #hcluster
-logtpm = log10(TPM_data + pseudo_count) 
-
-sampleDists = 1 - cor(logtpm, method='spearman')
-hc=hclust(as.dist(sampleDists), method = "complete")
-hcphy = as.phylo(hc)
-if(metaInfo && is.element("sample_id",colnames(clinical)) && is.element("batch",colnames(clinical))){
- co = clinical$batch[match(hcphy$tip.label, clinical$sample_id)]
- co = as.factor(co)
- co_length = length(levels(co))
- co = brewer.pal(co_length,"Set3")
+sampleDists <- 1 - cor(logtpm, method='spearman')
+hc <- hclust(as.dist(sampleDists), method = "complete")
+hcphy <- as.phylo(hc)
+if(metaInfo && batch_adjust_signal){
+ co <- Meta[match(hcphy$tip.label, Meta[[metaInfo_sample_id_column]]), metaInfo_batch_column]
+ co <- as.factor(co)
+ co_levels <- levels(co)
+ co <- brewer.pal(length(co_levels),"Set3")
  par(mar=c(3,3,3,3))
  plot(hcphy, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Sample clustering before QC (Spearman - Cor.)")
- Xtext = paste("batch",1:co_length)
+ Xtext =  co_levels #paste("batch",1:co_length)
  legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
 } else {
   plot(hcphy, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Sample clustering before QC (Spearman - Cor.)")
@@ -306,44 +349,48 @@ if(metaInfo)
   sd=apply(expr, 1, sd)
   expr = t(apply(expr, 1, rank, ties.method = "average"));
   #expr = qnorm(expr / (ncol(expr)+1));  # to standard normalization
-  expr = qnorm(expr / (ncol(expr)+1), mean=m, sd=sd)  # or, to preserve the mean and sd of each gene
-  expr = as.data.frame(expr)
-  covs = clinical
-  rownames(covs) = covs$sample_id
-  covs = covs[names(expr),]
-  if(is.element("sex",colnames(covs)))
+  expr = qnorm(expr / (ncol(expr)+1), mean=m, sd=sd)  # or, to preserve the mean and sd of each gene; matrix type
+  #expr = as.data.frame(expr)
+  covs = Meta
+  
+  if(gender_adjust_signal)
   {
-    	covs$sex = as.factor(covs$sex)
+    	covs[[metaInfo_gender_column]] = as.factor(covs[[metaInfo_gender_column]])
   }
-  if(is.element("batch",colnames(clinical))){
-      covs$batch = as.factor(covs$batch)
-      #if(is.element("age_death",colnames(covs)))
-      #{
-       # covs$age_death = as.numeric(covs$age_death)
-      #}
+  if(batch_adjust_signal){
+      covs[[metaInfo_batch_column]] = as.factor(covs[[metaInfo_batch_column]])
+    
       message("# adjusting expression with covariates...")
       ######################
       #Combat remove batch effects
       modcombat = model.matrix(~1, data = covs)
-      combat_expr = ComBat(dat=as.matrix(expr), batch=covs$batch, mod = modcombat)
+      combat_expr = ComBat(dat=as.matrix(expr), batch=covs[[metaInfo_batch_column]], mod = modcombat)
       # show sample clustering plot after removeing batch effects
       par(mar=c(3,3,3,3))
       sampleDists_combat = 1 - cor(combat_expr, method='spearman')
+
       hc_combat = hclust(as.dist(sampleDists_combat),method = "complete")
       hcphy_combat = as.phylo(hc_combat)
+      co <- Meta[match(hcphy_combat$tip.label, Meta[[metaInfo_sample_id_column]]), metaInfo_batch_column]
+      co <- as.factor(co)
+      co_levels <- levels(co)
+      co <- brewer.pal(length(co_levels),"Set3")
+
       plot(hcphy_combat, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Sample clustering after removing batch effects using Combat.")
-      Xtext = paste("batch",1:co_length)
+      Xtext =  co_levels 
       legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
     }
     #####################
     #sva adjusted
-    Mod = model.matrix(~.-batch-sample_id, data=covs) # full model(adjustment variables + variables of interest)
+    covs <- covs %>% select(adjust_covariates) 
+    Mod = model.matrix(~. , data=covs) # full model(adjustment variables + variables of interest)
     #Mod = model.matrix(~batch, data=covs)
     Mod0 = model.matrix(~1,data=covs) # Null model (vairables of interest)
   
     svaobj = sva(as.matrix(combat_expr),Mod, Mod0)
     fsvaobj = fsva(dbdat=as.matrix(combat_expr),mod=Mod,sv=svaobj,   newdat=as.matrix(combat_expr))
     residuals = fsvaobj$db
+    
   
     message("# run RLE on SVA normalized quantification data ...")
     #####################
@@ -353,32 +400,33 @@ if(metaInfo)
     rle=res-apply(res, 1, median) # after SVA
     rle=melt(cbind(ID=rownames(rle), rle), variable.name = "Sample",value.name ="TPM", id="ID")
     bymedian <- with(rle, reorder(Sample, TPM, IQR))  # sort by IQR
-    par(mar=c(7,3,3,1))
-    boxplot(TPM ~ bymedian, data=rle, ylim=c(-4,4), outline=F, las=2, boxwex=1, col='gray', cex.axis=0.5, main="RLE plot after QC", xlab="", ylab="Residual expression values")
-    abline(h=0, col='red',lwd=1)
+    par(mar=c(3,3,3,3))
+    boxplot(TPM ~ bymedian, data=rle, ylim = c(-rle_IQR_range, rle_IQR_range), outline=F, las=2, boxwex=1, col='gray', cex.axis=0.5, main="RLE plot after QC", xlab="", ylab="Residual expression values")
+    #abline(h=0, col='red',lwd=1)
     
     ## mean gene expression distribution before and after SVA
     par(mfrow=c(2,1))
-    hist(apply(expr,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution before adjustment")
-    hist(apply(residuals,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution after adjustment")
+    hist(apply(expr,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution before SVA adjustment")
+    hist(apply(residuals,1,mean), breaks=100, xlab="Rank normalized expression log10(TPM)", main="Expression distribution after SVA adjustment")
     ## clustering after sva
     sampleDists_sva = 1 - cor(residuals, method='spearman')
     hc_sva = hclust(as.dist(sampleDists_sva),method = "complete")
     hcphy_sva = as.phylo(hc_sva)
     
-    par(mfrow=c(1,1))
+    #par(mfrow=c(1,1))
     par(mar=c(3,3,3,3))
-    plot(hcphy_sva, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Final data clusting")
     
-    Xtext = paste("batch",1:co_length)
+    co <- Meta[match(hcphy_sva$tip.label, Meta[[metaInfo_sample_id_column]]), metaInfo_batch_column]
+    co <- as.factor(co)
+    co_levels <- levels(co)
+    co <- brewer.pal(length(co_levels),"Set3")
+    plot(hcphy_sva, tip.col = co, type = "unrooted", cex=.2, lab4ut='axial',underscore = T, main="Sample clustering after QC.")
+    Xtext =  co_levels 
     legend('bottomleft',pch=21,Xtext, col='white',pt.bg=co, cex=.5)
    
   message("# save final quantification data into file")
   ######################
   write.table(format(residuals, digits=4,nsmall=4), file = "expression.postQC.xls", sep="\t", col.names = NA, quote=F,row.names = TRUE)
-  rownames(clinical) = clinical$sample_id
-  clinical_RNAseqSamples = clinical[colnames(residuals),]
-  write.table(clinical_RNAseqSamples, file = "clinical_RNAseqQCedSamples.txt", sep="\t", col.names=TRUE, quote=F, row.names=FALSE)
 }
 
 ```
